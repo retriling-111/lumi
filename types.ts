@@ -1,15 +1,28 @@
+
+export interface Attachment {
+  type: 'image' | 'file';
+  mimeType: string;
+  data: string; // Base64 string
+  previewUrl?: string; // For displaying in UI
+  name?: string;
+}
+
 export interface Message {
   id: string;
   role: 'user' | 'model';
   text: string;
   timestamp: Date;
+  attachment?: Attachment;
 }
 
 export interface Task {
+  id: string;
   title: string;
-  description: string;
-  difficulty: 'Gentle' | 'Moderate' | 'Challenge';
+  description?: string;
+  difficulty?: 'Gentle' | 'Moderate' | 'Challenge';
   completed: boolean;
+  reminderTime?: string; // Renamed from 'time' to be explicit
+  notified?: boolean; // Track if notification has fired
 }
 
 export enum AppMode {
@@ -25,22 +38,18 @@ export interface TaskResponse {
   }>;
 }
 
-export type AiProvider = 'gemini' | 'openai';
+export type AiProvider = 'gemini';
 
 export interface AiSettings {
   provider: AiProvider;
   modelId: string;
-  openaiKey?: string; // User provided key for OpenAI
+  geminiKey?: string; // User provided key for Gemini
 }
 
 export const AVAILABLE_MODELS = {
   gemini: [
     { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash (Fast)' },
     { id: 'gemini-2.5-flash-lite-latest', name: 'Gemini 2.5 Flash Lite' },
-  ],
-  openai: [
-    { id: 'gpt-4o', name: 'GPT-4o (Smart)' },
-    { id: 'gpt-4o-mini', name: 'GPT-4o Mini (Fast)' },
-    { id: 'gpt-3.5-turbo', name: 'GPT-3.5 Turbo' },
+    { id: 'gemini-2.0-flash-thinking-exp-01-21', name: 'Gemini 2.0 Flash Thinking' },
   ]
 };

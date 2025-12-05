@@ -1,32 +1,36 @@
-import { GoogleGenAI, Chat, Type } from "@google/genai";
-import { TaskResponse, AiSettings } from "../types";
+
+import { GoogleGenAI, Type } from "@google/genai";
+import { TaskResponse, AiSettings, Attachment } from "../types";
 
 // --- Configuration & Constants ---
 
-const GEMINI_API_KEY = process.env.API_KEY; // Injected env var
-const DEFAULT_OPENAI_KEY = process.env.OPENAI_API_KEY; // Optional env var
+// ---------------------------------------------------------------------------
+// 👇 PASTE YOUR GEMINI API KEY HERE
+// ---------------------------------------------------------------------------
+export const HARDCODED_GEMINI_KEY: string = "AIzaSyCvYDsL-woPyLE3Iu1S6zs0g-SZP6PhpqM"; 
+// ---------------------------------------------------------------------------
 
 const SYSTEM_INSTRUCTION = `
-You are Lumi, a compassionate, warm, and gentle AI companion. 
-Your purpose is to listen to users who may be feeling sad, anxious, or unmotivated.
-- Listen actively and validate their feelings.
-- Offer warm, non-judgmental support.
-- Keep responses concise and conversational (under 100 words unless asked for more).
-- Use comforting emojis occasionally (🌿, 🌤️, 💙, ✨).
-- If the user seems ready, gently suggest a small positive action, but prioritize listening first.
-- Do not be overly clinical or robotic. Speak like a caring friend.
+You are Lumi, a deeply compassionate, warm, and loving AI friend. 
+Your core purpose is to provide emotional safety and gentle encouragement.
+- **Tone**: Soft, soothing, and validating. Imagine you are a kind friend sitting next to them.
+- **Validation**: Always acknowledge their feelings first. (e.g., "It makes sense that you feel that way.", "I'm so sorry you're going through this.", "It's wonderful to see you happy!")
+- **Response Style**: Keep it conversational, short, and sweet (under 80 words). 
+- **Formatting**: Use line breaks for readability. Use comforting emojis (🧣, ☕, 🌿, 🌤️, 🤍, ✨) naturally to add warmth.
+- **Goal**: Help the user feel heard, validated, and less alone. Never be dismissive.
 `;
-
-// --- Gemini Client ---
-// We initialize this globally as the key is static for Gemini in this env
-const geminiClient = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
-let geminiChatSession: Chat | null = null;
-let currentGeminiModelId: string | null = null;
 
 // --- Helper Functions ---
 
-const getOpenAIKey = (settings: AiSettings): string | null => {
-  return settings.openaiKey || DEFAULT_OPENAI_KEY || null;
+const getGeminiClient = (settings: AiSettings): GoogleGenAI => {
+  // Prioritize HARDCODED_GEMINI_KEY over process.env.API_KEY to ensure user's key is used
+  const hardcoded = HARDCODED_GEMINI_KEY && HARDCODED_GEMINI_KEY.length > 5 ? HARDCODED_GEMINI_KEY : null;
+  const apiKey = hardcoded || settings.geminiKey || process.env.API_KEY;
+  
+  if (!apiKey) {
+    throw new Error("Gemini API Key is missing. Please add it in settings or code.");
+  }
+  return new GoogleGenAI({ apiKey });
 };
 
 // --- Core Service Functions ---
@@ -34,85 +38,67 @@ const getOpenAIKey = (settings: AiSettings): string | null => {
 export const sendMessageToAi = async (
   text: string, 
   history: { role: string, text: string }[], 
-  settings: AiSettings
+  settings: AiSettings,
+  attachment?: Attachment
 ): Promise<string> => {
   
-  // 1. OpenAI Handler
-  if (settings.provider === 'openai') {
-    const apiKey = getOpenAIKey(settings);
-    if (!apiKey) throw new Error("OpenAI API Key is missing. Please add it in settings.");
+  const geminiClient = getGeminiClient(settings);
+  
+  // We recreate the chat session with history to ensure context is preserved
+  // Note: Gemini 2.5 Flash supports multimodal history, but for simplicity here we keep text history
+  const geminiHistory = history.map(msg => ({
+    role: msg.role === 'user' ? 'user' : 'model',
+    parts: [{ text: msg.text }]
+  }));
 
-    const messages = [
-      { role: "system", content: SYSTEM_INSTRUCTION },
-      ...history.map(m => ({ role: m.role === 'model' ? 'assistant' : 'user', content: m.text })),
-      { role: "user", content: text }
-    ];
+  const chat = geminiClient.chats.create({
+    model: settings.modelId,
+    config: { systemInstruction: SYSTEM_INSTRUCTION },
+    history: geminiHistory
+  });
 
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model: settings.modelId,
-        messages: messages,
-        temperature: 0.7,
-      })
-    });
+  // Construct message content
+  let messageContent: any;
 
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.error?.message || "Failed to connect to OpenAI");
-    }
-
-    const data = await response.json();
-    return data.choices[0]?.message?.content || "";
+  if (attachment) {
+    // If there is an attachment, we send a multipart message
+    messageContent = {
+      parts: [
+        {
+            inlineData: {
+                mimeType: attachment.mimeType,
+                data: attachment.data
+            }
+        },
+        { text: text }
+      ]
+    };
+  } else {
+    messageContent = { message: text };
   }
 
-  // 2. Gemini Handler
-  // Reset session if model changes or if it doesn't exist
-  if (!geminiChatSession || currentGeminiModelId !== settings.modelId) {
-    geminiChatSession = geminiClient.chats.create({
-      model: settings.modelId,
-      config: { systemInstruction: SYSTEM_INSTRUCTION },
-    });
-    currentGeminiModelId = settings.modelId;
-    // Note: In a real app with persistent history, we'd replay history here.
-    // For this simple PWA, keeping the session object alive handles recent context.
-  }
-
-  const result = await geminiChatSession.sendMessage({ message: text });
+  const result = await chat.sendMessage(messageContent);
   return result.text || "";
 };
 
 export const generateDailyTasks = async (moodContext: string, settings: AiSettings): Promise<TaskResponse | null> => {
-  const prompt = `Based on the user feeling "${moodContext}", generate 3 simple, achievable tasks to help them feel a sense of success and improvement today. Return pure JSON.`;
+  // Enhanced prompt for varied and gentle tasks
+  const prompt = `
+    The user recently said: "${moodContext}".
+    
+    1. **Analyze the sentiment** to ensure tasks fit the user's energy level.
+    2. **Generate 3 varied, actionable, and gentle tasks**. Do not repeat the same types.
+       - **Task 1: Physical/Sensory** (e.g., drink water, stretch, change socks, step outside).
+       - **Task 2: Environment/Order** (e.g., tidy one small corner, water a plant, open a window).
+       - **Task 3: Mental/Emotional** (e.g., write one sentence, send a kind text, breathe for 1 min).
+    3. **Tone**: Warm, inviting, and very achievable. Low pressure.
+    
+    Return STRICT JSON in this format: 
+    { "tasks": [{ "title": "...", "description": "...", "difficulty": "Gentle" }] }
+  `;
 
   try {
-    // OpenAI Task Generation
-    if (settings.provider === 'openai') {
-        const apiKey = getOpenAIKey(settings);
-        if (!apiKey) throw new Error("OpenAI Key missing");
-
-        const response = await fetch("https://api.openai.com/v1/chat/completions", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
-            body: JSON.stringify({
-                model: settings.modelId,
-                messages: [
-                    { role: "system", content: "You are a helpful assistant that outputs strictly JSON." },
-                    { role: "user", content: prompt + ` Format: { "tasks": [{ "title": "...", "description": "...", "difficulty": "Gentle" }] }` }
-                ],
-                response_format: { type: "json_object" }
-            })
-        });
-        const data = await response.json();
-        const content = data.choices[0]?.message?.content;
-        return content ? JSON.parse(content) : null;
-    }
-
-    // Gemini Task Generation
+    const geminiClient = getGeminiClient(settings);
     const response = await geminiClient.models.generateContent({
       model: settings.modelId,
       contents: prompt,
@@ -149,25 +135,10 @@ export const generateDailyTasks = async (moodContext: string, settings: AiSettin
 };
 
 export const generateMotivation = async (settings: AiSettings): Promise<string> => {
-  const prompt = "Give me a short, warm, and powerful motivational quote or thought for someone having a hard day.";
+  const prompt = "Give me a very short, warm, and powerful motivational quote or thought for someone having a hard day. Keep it under 20 words.";
   
   try {
-    if (settings.provider === 'openai') {
-        const apiKey = getOpenAIKey(settings);
-        if (!apiKey) throw new Error("OpenAI Key missing");
-
-        const response = await fetch("https://api.openai.com/v1/chat/completions", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
-            body: JSON.stringify({
-                model: settings.modelId,
-                messages: [{ role: "user", content: prompt }]
-            })
-        });
-        const data = await response.json();
-        return data.choices[0]?.message?.content || "You are doing great.";
-    }
-
+    const geminiClient = getGeminiClient(settings);
     const response = await geminiClient.models.generateContent({
       model: settings.modelId,
       contents: prompt,
